@@ -1,0 +1,44 @@
+
+###################################################
+#### 1. Plot summary metrics for Blackbox data ####
+###################################################
+
+
+#### 0. Optional: modify Blackbox generated "summary.csv" file. Make sure, summary data from different animals is represented on different rows and experimental group identity is saved in "Treat_group" variable.
+
+#### 1. Load input summary data
+
+file_path = file.choose()
+summary_data <- read.csv(file_path, row.names = 1, header = TRUE, fileEncoding = "UTF-8")
+row.names(summary_data) # experimental animals
+
+#### 2. Plot summary data
+
+library(ggplot2) # great plotting library for R
+library(dplyr)
+library(scales) # for better axis formatting
+
+# Print all summary behavioral metrics we can set
+
+colnames(summary_data) # behavioral metrics available for plotting
+
+# Plot average bar graph with datapoints for individual summary metrics
+
+group_average <- summarise(group_by(summary_data, Treat_group), my_mean = mean(average_hind_paw_luminance_ratio..l.r.)) # Enter behavioral metric for plotting. Group averages will be calculated for bargraphing.
+
+custom_colors <- c("#1f78b4", "#33a02c") # Adjust colors as needed
+
+
+# Create the plot
+
+plot = ggplot() + geom_bar(data=group_average, aes(y=my_mean, x=as.factor(Treat_group), fill=as.factor(Treat_group)), stat="identity") + 
+  scale_fill_manual(values=custom_colors) + 
+  geom_point(data=summary_data, aes(y=average_hind_paw_luminance_ratio..l.r., x=as.factor(Treat_group)), stat="identity", size=5, color="black") + # enter the behavioral metric name under y="..."
+  labs(
+    title = "Behavioral metric", 
+    x = "Treatment Group", # Adjust X and Y name as needed as well as Title#
+    y = "Average hind-paw luminence ratio L/R"
+  ) +
+  theme_classic(base_size = 22) + 
+  theme(legend.position="none") # change the behavioral metric you want to plot
+plot
