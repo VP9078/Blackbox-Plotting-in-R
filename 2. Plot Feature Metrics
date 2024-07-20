@@ -2,6 +2,10 @@
 #### 2. Plot behavioral feature time-series data ####
 #####################################################
 
+#####################################################
+#### 2. Plot behavioral feature time-series data ####
+#####################################################
+
 # Load packages
 # Can install rhdf5 by install BiocManager, then running: BiocManager::install("rhdf5")
 library(rhdf5)
