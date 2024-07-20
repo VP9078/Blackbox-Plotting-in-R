@@ -18,6 +18,8 @@ library(stringr)
 
 #### 1. Load input tracking ####
 
+pixel_to_cm <- 0.1
+
 # Function to load and process tracking data
 tracking_load <- function(){
   file_path = file.choose()  # Prompt user to select file
@@ -112,6 +114,7 @@ plot_speed <- function (tag, body_part, subset_size = "all") {
     distances[i-1] <- sqrt((x_row[i] - x_row[i-1])^2 + (y_row[i] - y_row[i-1])^2)
   }
   distances <- unlist(distances)
+  distances <- distances * pixel_to_cm
   
   # Compute speeds as distances per frame
   for (i in 1:length(distances)) {
@@ -200,10 +203,12 @@ plot_trajectory <- function (tag, body_part, subset_size = "all", points = FALSE
   x_row_index <- which(grepl("x", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
   x_row <- get(paste0(tag, "_tracking_coordinates"))[x_row_index,]
   x_row <- unlist(x_row)
+  x_row <- x_row * pixel_to_cm
   
   y_row_index <- which(grepl("y", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
   y_row <- get(paste0(tag, "_tracking_coordinates"))[y_row_index,]
   y_row <- unlist(y_row)
+  y_row <- y_row * pixel_to_cm
   
   # Make trajectory data frame
   trajectory_df <- data.frame(x_row, y_row)[subset_size,]
@@ -217,13 +222,13 @@ plot_trajectory <- function (tag, body_part, subset_size = "all", points = FALSE
   
   # Generate trajectory plot
   trajectory_plot <-
-   ggplot(trajectory_df, aes(x = x_row, y = y_row)) +
-     geom_path(aes(color = index)) +
-      scale_color_gradientn(colors = c("blue", "green", "yellow", "red")) +
-     labs(
+    ggplot(trajectory_df, aes(x = x_row, y = y_row)) +
+    geom_path(aes(color = index)) +
+    scale_color_gradientn(colors = c("blue", "green", "yellow", "red")) +
+    labs(
       title = str_to_title(paste0(tag, " ", body_part, " trajectory")),
-      x = "X Coordinates",
-      y = "Y Coordinates"
+      x = "Box Length (cm)",
+      y = "Box Width (cm)"
     ) +
     theme_minimal() +
     coord_cartesian(xlim = c(0, grid_size), ylim = c(0, grid_size)) +
@@ -233,7 +238,7 @@ plot_trajectory <- function (tag, body_part, subset_size = "all", points = FALSE
   
   if (points == TRUE)
     trajectory_plot <- trajectory_plot +
-      geom_point(aes(color = index))
+    geom_point(aes(color = index))
   
   assign(paste0(tag, "_", body_part, "_trajectory_plot"), trajectory_plot, envir = .GlobalEnv)
   
@@ -254,14 +259,16 @@ plot_heatmap <- function (tag, body_part, subset_size = "all", grid_size = "full
   x_row_index <- which(grepl("x", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
   x_row <- get(paste0(tag, "_tracking_coordinates"))[x_row_index,]
   x_row <- unlist(x_row)
+  x_row <- x_row * pixel_to_cm
   
   y_row_index <- which(grepl("y", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
   y_row <- get(paste0(tag, "_tracking_coordinates"))[y_row_index,]
   y_row <- unlist(y_row)
+  y_row <- y_row * pixel_to_cm
   
   # Set grid size
   if (grid_size == "full")
-    grid_size <- 500
+    grid_size <- 50
   
   # Make trajectory data frame
   trajectory_df <- as.matrix(data.frame(x_row, y_row)[subset_size,])
@@ -272,14 +279,13 @@ plot_heatmap <- function (tag, body_part, subset_size = "all", grid_size = "full
     theme_minimal() +
     coord_cartesian(xlim = c(0, grid_size), ylim = c(0, grid_size)) +
     labs(title = "Mouse Cage Occupancy Heatmap",
-         x = "X Coordinate",
-         y = "Y Coordinate") +
+         x = "Box Length (cm)",
+         y = "Box Width (cm)") +
     theme(
       plot.title = element_text(face = "bold", hjust = 0.5)  # Center the title and make it bold
     )
-    
+  
   print(heatmap)
   
   assign(paste0(tag, "_", body_part, "_heatmap_plot"), heatmap, envir = .GlobalEnv)
 }
-
