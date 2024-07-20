@@ -442,13 +442,13 @@ ui <- navbarPage(
              p("2. All raw scripts available at: https://github.com/VP9078/Blackbox-Plotting-in-R.git"),
              p("3. Contact vihaanpande08@gmail.com for any queries."),
              h3("Tracking Data Analysis"),
-             p("1. Upload HDF5 file containing tracking data."),
+             p("1. Upload tracking HDF5 (.h5) file."),
              p("2. Enter a unique identifier for the dataset."),
              p("3. Select the body part to analyze and the type of plot (Speed, Likelihood, Trajectory, Heatmap)."),
              p("4. Specify start and end indices for data subsetting (optional)."),
              p("5. Click 'Plot Data' to generate the plot."),
              h3("Features Data Analysis"),
-             p("1. Upload HDF5 file containing features data."),
+             p("1. Upload features HDF5 (.h5) file."),
              p("2. Enter a unique identifier for the dataset."),
              p("3. Select the metric to analyze."),
              p("4. Specify start and end indices for data subsetting (optional)."),
@@ -509,8 +509,44 @@ server <- function(input, output, session) {
   
   observeEvent(input$tracking_file, {
     req(input$tracking_file)
+    
+    validate(
+      need(grepl("\\.h5$", input$tracking_file$name), "Please upload a valid tracking HDF5 (.h5) file.")
+    )
+    
     tracking_load(input$tracking_file$datapath, input$tracking_tag)
     updateSelectInput(session, "tracking_body_part", choices = body_parts)
+  })
+  
+  observeEvent(input$features_file, {
+    req(input$features_file)
+    
+    validate(
+      need(grepl("\\.h5$", input$features_file$name), "Please upload a valid features HDF5 (.h5) file.")
+    )
+    
+    bboxdataPath <- input$features_file$datapath
+    suppressWarnings(bboxdata <<- H5Fopen(bboxdataPath))
+    
+    groupls <- h5ls(bboxdata)
+    bboxgroupname <- unique(groupls$group)[2]
+    
+    behavioral_metrics <<- names(h5read(bboxdataPath, bboxgroupname))
+    filtered_metrics <- behavioral_metrics[!grepl("fps|frame_count|recording_time", behavioral_metrics)]
+    
+    updateSelectInput(session, "features_metric", choices = filtered_metrics)
+  })
+  
+  observeEvent(input$summary_file, {
+    req(input$summary_file)
+    
+    validate(
+      need(grepl("\\.csv$", input$summary_file$name), "Please upload a valid CSV file.")
+    )
+    
+    summary_load(input$summary_tag, input$summary_file$datapath)
+    updateSelectInput(session, "summary_metric", choices = metrics)
+    updateSelectInput(session, "summary_mouse_name", choices = mouse_names)
   })
   
   observeEvent(input$tracking_tag, {
@@ -538,21 +574,6 @@ server <- function(input, output, session) {
     })
   })
   
-  observeEvent(input$features_file, {
-    req(input$features_file)
-    
-    bboxdataPath <- input$features_file$datapath
-    suppressWarnings(bboxdata <<- H5Fopen(bboxdataPath))
-    
-    groupls <- h5ls(bboxdata)
-    bboxgroupname <- unique(groupls$group)[2]
-    
-    behavioral_metrics <<- names(h5read(bboxdataPath, bboxgroupname))
-    filtered_metrics <- behavioral_metrics[!grepl("fps|frame_count|recording_time", behavioral_metrics)]
-    
-    updateSelectInput(session, "features_metric", choices = filtered_metrics)
-  })
-  
   observeEvent(input$features_load_data, {
     req(input$features_file, input$features_metric)
     
@@ -571,13 +592,6 @@ server <- function(input, output, session) {
       p <- get(plot_name, envir = .GlobalEnv)
       p
     })
-  })
-  
-  observeEvent(input$summary_file, {
-    req(input$summary_file)
-    summary_load(input$summary_tag, input$summary_file$datapath)
-    updateSelectInput(session, "summary_metric", choices = metrics)
-    updateSelectInput(session, "summary_mouse_name", choices = mouse_names)
   })
   
   observeEvent(input$summary_plot_data, {
