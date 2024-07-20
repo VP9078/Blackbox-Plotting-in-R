@@ -1,0 +1,642 @@
+library(shiny)
+library(ggplot2)
+library(rhdf5)
+library(stringr)
+library(patchwork)
+library(knitr)
+
+# Increase the maximum upload size to 500 MB
+options(shiny.maxRequestSize = 500 * 1024^2)
+
+# Conversion factor from pixels to cm
+pixel_to_cm <- 0.1
+
+# Create a new environment to store plots
+plot_storage <- new.env()
+
+# Function to remove periods and underscores from text
+remove_periods_and_underscores <- function(text) {
+  text <- gsub("_", " ", text)  # Replace underscores with spaces
+  text <- gsub("\\.{2,}", ".", text)  # Replace multiple periods with a single period
+  text <- gsub("\\.", " ", text)  # Replace periods with spaces
+  text <- gsub(" +", " ", text)  # Replace multiple spaces with a single space
+  text <- trimws(text)  # Trim leading and trailing whitespace
+  return(text)
+}
+
+# Functions for tracking data analysis
+
+# Load tracking data from HDF5 file
+tracking_load <- function(file_path, tag) {
+  if (exists("tag_memory", envir = .GlobalEnv)) {
+    tag_memory[length(tag_memory) + 1] <<- tag  # Add tag to memory
+  } else {
+    tag_memory <<- c(tag)  # Initialize tag memory
+  }
+  
+  suppressWarnings(assign(paste0(tag, "_tracking_data"), H5Fopen(file_path), envir = .GlobalEnv))
+  tracking_data <- get(paste0(tag, "_tracking_data"))
+  
+  suppressWarnings(assign(paste0(tag, "_tracking_coordinates"), as.data.frame(h5read(tracking_data, name = "/df_with_missing/table", compoundAsDataFrame = FALSE)$values_block_0), envir = .GlobalEnv))
+  tracking_coordinates <- get(paste0(tag, "_tracking_coordinates"))
+  
+  tracking_names <- h5readAttributes(tracking_data, name = "/df_with_missing/table")$values_block_0_kind
+  pattern <- "(?<=\\nV)(.*?)(?=\\np)"
+  all_matches <- str_extract_all(tracking_names, pattern)[[1]]
+  exclude_indices <- c(2, 3, 4)
+  body_parts <<- all_matches[-exclude_indices]
+  
+  assign(paste0(tag, "_row_names"),
+         unlist(lapply(body_parts, function(part) {
+           c(paste(part, "x", sep = " "),
+             paste(part, "y", sep = " "),
+             paste(part, "likelihood", sep = " "))
+         }), use.names = FALSE), envir = .GlobalEnv)
+  
+  rownames(tracking_coordinates) <- get(paste0(tag, "_row_names"))
+  assign(paste0(tag, "_tracking_coordinates"), tracking_coordinates, envir = .GlobalEnv)
+  
+  rm(tracking_coordinates, tracking_data)
+}
+
+# Plot speed data for a specific body part
+plot_speed <- function(tag, body_part, start_idx = NULL, end_idx = NULL) {
+  tracking_coordinates <- get(paste0(tag, "_tracking_coordinates"))
+  if (start_idx > ncol(tracking_coordinates)) {
+    start_idx <- 1
+  }
+  if (end_idx == 0 || end_idx > ncol(tracking_coordinates)) {
+    end_idx <- ncol(tracking_coordinates)
+  }
+  
+  subset_size <- start_idx:end_idx
+  
+  distances <- numeric()
+  speeds <- numeric()
+  
+  fps <- 45  # Frames per second
+  time_between_frames <- 1 / fps
+  vid_length <- time_between_frames * ncol(tracking_coordinates)
+  
+  x_row_index <- which(grepl("x", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
+  x_row <- tracking_coordinates[x_row_index, ]
+  x_row <- unlist(x_row)
+  
+  y_row_index <- which(grepl("y", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
+  y_row <- tracking_coordinates[y_row_index, ]
+  y_row <- unlist(y_row)
+  
+  for (i in 2:length(subset_size)) {
+    distances[i - 1] <- sqrt((x_row[subset_size[i]] - x_row[subset_size[i - 1]])^2 + (y_row[subset_size[i]] - y_row[subset_size[i - 1]])^2)
+  }
+  distances <- distances * pixel_to_cm
+  
+  for (i in 1:length(distances)) {
+    speeds[i] <- distances[i] / time_between_frames
+  }
+  assign(paste0(tag, "_", body_part, "_speed_values"), speeds, envir = .GlobalEnv)
+  
+  time_vector <- seq(from = time_between_frames, to = (vid_length - time_between_frames), by = time_between_frames)
+  
+  # Ensure vectors are of the same length
+  if (length(time_vector) != length(speeds)) {
+    min_length <- min(length(time_vector), length(speeds))
+    time_vector <- time_vector[1:min_length]
+    speeds <- speeds[1:min_length]
+  }
+  
+  assign(paste0(tag, "_speed_df"), data.frame(time_vector, speeds), envir = .GlobalEnv)
+  speed_df <- get(paste0(tag, "_speed_df"))[subset_size, ]
+  
+  assign(paste0(tag, "_", body_part, "_speed_plot"),
+         ggplot(speed_df, aes(x = time_vector, y = speeds)) +
+           geom_line(color = "blue") +
+           labs(
+             title = str_to_title(paste0(tag, " ", remove_periods_and_underscores(body_part), " Speed")),
+             x = "Time (s)",
+             y = "Speed"
+           ) +
+           theme_minimal() +
+           theme(
+             plot.title = element_text(face = "bold", hjust = 0.5)
+           ),
+         envir = .GlobalEnv)
+  
+  get(paste0(tag, "_", body_part, "_speed_plot"))
+}
+
+# Plot likelihood data for a specific body part
+plot_likelihood <- function(tag, body_part, start_idx = NULL, end_idx = NULL) {
+  tracking_coordinates <- get(paste0(tag, "_tracking_coordinates"))
+  if (start_idx > ncol(tracking_coordinates)) {
+    start_idx <- 1
+  }
+  if (end_idx == 0 || end_idx > ncol(tracking_coordinates)) {
+    end_idx <- ncol(tracking_coordinates)
+  }
+  
+  subset_size <- start_idx:end_idx
+  
+  fps <- 45  # Frames per second
+  time_between_frames <- 1 / fps
+  vid_length <- time_between_frames * ncol(tracking_coordinates)
+  
+  likelihood_row_index <- which(grepl("likelihood", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
+  likelihood_row <- tracking_coordinates[likelihood_row_index, ]
+  likelihood_row <- unlist(likelihood_row)
+  
+  time_vector <- seq(from = time_between_frames, to = (vid_length), by = time_between_frames)
+  
+  # Ensure vectors are of the same length
+  if (length(time_vector) != length(likelihood_row)) {
+    min_length <- min(length(time_vector), length(likelihood_row))
+    time_vector <- time_vector[1:min_length]
+    likelihood_row <- likelihood_row[1:min_length]
+  }
+  
+  assign(paste0(tag, "_", body_part, "_likelihood_df"), data.frame(time_vector, likelihood_row), envir = .GlobalEnv)
+  likelihood_df <- get(paste0(tag, "_", body_part, "_likelihood_df"))[subset_size, ]
+  
+  assign(paste0(tag, "_", body_part, "_likelihood_plot"),
+         ggplot(likelihood_df, aes(x = time_vector, y = likelihood_row)) +
+           geom_line(color = "blue") +
+           labs(
+             title = str_to_title(paste0(tag, " ", remove_periods_and_underscores(body_part), " Likelihood")),
+             x = "Time (s)",
+             y = "Likelihood"
+           ) +
+           theme_minimal() +
+           theme(
+             plot.title = element_text(face = "bold", hjust = 0.5)
+           ) +
+           coord_cartesian(ylim = c(0, max(likelihood_row))),
+         envir = .GlobalEnv)
+  
+  get(paste0(tag, "_", body_part, "_likelihood_plot"))
+}
+
+# Plot trajectory data for a specific body part
+plot_trajectory <- function(tag, body_part, start_idx = NULL, end_idx = NULL, points = FALSE, grid_size = "full") {
+  tracking_coordinates <- get(paste0(tag, "_tracking_coordinates"))
+  if (start_idx > ncol(tracking_coordinates)) {
+    start_idx <- 1
+  }
+  if (end_idx == 0 || end_idx > ncol(tracking_coordinates)) {
+    end_idx <- ncol(tracking_coordinates)
+  }
+  
+  subset_size <- start_idx:end_idx
+  
+  x_row_index <- which(grepl("x", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
+  x_row <- tracking_coordinates[x_row_index, ]
+  x_row <- unlist(x_row) * pixel_to_cm
+  
+  y_row_index <- which(grepl("y", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
+  y_row <- tracking_coordinates[y_row_index, ]
+  y_row <- unlist(y_row) * pixel_to_cm
+  
+  trajectory_df <- data.frame(x_row, y_row)[subset_size, ]
+  trajectory_df$index <- 1:nrow(trajectory_df)
+  
+  if (grid_size == "full")
+    grid_size <- max(x_row)
+  
+  trajectory_plot <- ggplot(trajectory_df, aes(x = x_row, y = y_row)) +
+    geom_path(aes(color = index)) +
+    scale_color_gradientn(colors = c("blue", "green", "yellow", "red")) +
+    labs(
+      title = str_to_title(paste0(tag, " ", remove_periods_and_underscores(body_part), " Trajectory")),
+      x = "Box Length (cm)",
+      y = "Box Width (cm)"
+    ) +
+    theme_minimal() +
+    coord_cartesian(xlim = c(0, grid_size), ylim = c(0, grid_size)) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5)
+    )
+  
+  if (points == TRUE)
+    trajectory_plot <- trajectory_plot + geom_point(aes(color = index))
+  
+  assign(paste0(tag, "_", body_part, "_trajectory_plot"), trajectory_plot, envir = .GlobalEnv)
+  
+  get(paste0(tag, "_", body_part, "_trajectory_plot"))
+}
+
+# Plot heatmap data for a specific body part
+plot_heatmap <- function(tag, body_part, start_idx = NULL, end_idx = NULL, grid_size = "full") {
+  tracking_coordinates <- get(paste0(tag, "_tracking_coordinates"))
+  if (start_idx > ncol(tracking_coordinates)) {
+    start_idx <- 1
+  }
+  if (end_idx == 0 || end_idx > ncol(tracking_coordinates)) {
+    end_idx <- ncol(tracking_coordinates)
+  }
+  
+  subset_size <- start_idx:end_idx
+  
+  x_row_index <- which(grepl("x", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
+  x_row <- tracking_coordinates[x_row_index, ]
+  x_row <- unlist(x_row) * pixel_to_cm
+  
+  y_row_index <- which(grepl("y", get(paste0(tag, "_row_names"))) & grepl(body_part, get(paste0(tag, "_row_names"))))
+  y_row <- tracking_coordinates[y_row_index, ]
+  y_row <- unlist(y_row) * pixel_to_cm
+  
+  if (grid_size == "full")
+    grid_size <- 50
+  
+  trajectory_df <- as.matrix(data.frame(x_row, y_row)[subset_size, ])
+  
+  heatmap <- ggplot(trajectory_df, aes(x = x_row, y = y_row)) +
+    geom_bin_2d(bins = 50) +
+    scale_fill_gradient(low = "blue", high = "red", name = "Density") +
+    theme_minimal() +
+    coord_cartesian(xlim = c(0, grid_size), ylim = c(0, grid_size)) +
+    labs(title = paste0(tag, " Cage Occupancy Heatmap"),
+         x = "Box Length (cm)",
+         y = "Box Width (cm)") +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5)
+    )
+  
+  assign(paste0(tag, "_", body_part, "_heatmap_plot"), heatmap, envir = .GlobalEnv)
+}
+
+# Functions for features data analysis
+
+# Load and plot features data from HDF5 file
+features_load_and_plot <- function(bboxdataPath, bboxdsetnm, metric, start_idx = NULL, end_idx = NULL) {
+  suppressWarnings(bboxdata <<- H5Fopen(bboxdataPath))
+  groupls <- h5ls(bboxdata)
+  bboxgroupname <- unique(groupls$group)[2]
+  
+  behavioral_metrics <<- names(h5read(bboxdataPath, bboxgroupname))
+  filtered_metrics <- behavioral_metrics[!grepl("fps|frame_count|recording_time", behavioral_metrics)]
+  
+  objectpath <- paste(bboxgroupname, metric, sep="/")
+  assign(paste0(metric,"_", bboxdsetnm), h5read(bboxdataPath, objectpath))
+  
+  obj <- get(paste0(metric,"_", bboxdsetnm))
+  
+  if (start_idx > length(obj)) {
+    start_idx <- 1
+  }
+  if (end_idx == 0 || end_idx > length(obj)) {
+    end_idx <- length(obj)
+  }
+  
+  obj <- obj[start_idx:end_idx]
+  objframe_count <- length(obj)
+  fps <- 45  # Frames per second
+  vid_length <- objframe_count / fps
+  time_increments <<- 1 / fps
+  timelist <- seq(from = 1 / fps, to = vid_length, by = time_increments)
+  
+  obj_df <- data.frame(values = obj, times = timelist[1:objframe_count])
+  
+  # Ensure vectors are of the same length
+  if (length(obj_df$times) != length(obj_df$values)) {
+    min_length <- min(length(obj_df$times), length(obj_df$values))
+    obj_df <- obj_df[1:min_length, ]
+  }
+  
+  df_name <- paste0(metric, "_", bboxdsetnm, "_df")
+  assign(df_name, obj_df, envir = .GlobalEnv)
+  
+  if (is.factor(obj) || is.logical(obj)) {
+    obj_df$values <- as.numeric(obj_df$values)
+    
+    plot_title <- str_to_title(paste0(remove_periods_and_underscores(metric), " ", remove_periods_and_underscores(bboxdsetnm)," Time Series Plot"))
+    plot_name <- paste0(metric, "_", bboxdsetnm, "_plot")
+    p <- ggplot(obj_df, aes(x = times, y = values)) +
+      geom_tile(aes(width = time_increments, height = Inf, fill = factor(values))) +
+      scale_fill_manual(values = c("1" = "blue", "0" = "red"), na.value = "transparent") +
+      labs(x = "Time (s)", y = str_to_title(remove_periods_and_underscores(metric)), fill = "State") +
+      ggtitle(plot_title) +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+    
+    assign(plot_name, p, envir = .GlobalEnv)
+  }
+  else if (is.array(obj)) {
+    plot_title <- str_to_title(paste0(remove_periods_and_underscores(metric), " ", remove_periods_and_underscores(bboxdsetnm), " Time Series Plot"))
+    plot_name <- paste0(metric, "_", bboxdsetnm, "_plot")
+    p <- ggplot(obj_df, aes(x = times, y = values)) +
+      geom_area() +
+      labs(x = "Time (s)", y = str_to_title(remove_periods_and_underscores(metric))) +
+      ggtitle(plot_title) +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+    
+    assign(plot_name, p, envir = .GlobalEnv)
+  }
+}
+
+# Functions for summary data analysis
+
+# Load summary data from CSV file
+summary_load <- function(tag, file_path) {
+  if (exists("summary_tag_memory", envir = .GlobalEnv)) {
+    summary_tag_memory[length(summary_tag_memory) + 1] <<- tag  # Add tag to memory
+  } else {
+    summary_tag_memory <<- c(tag)  # Initialize tag memory
+  }
+  
+  suppressWarnings({
+    assign(paste0(tag, "_summary_data"), read.csv(file_path, row.names = 1, header = TRUE, fileEncoding = "UTF-8"), envir = .GlobalEnv)
+  })
+  
+  metrics <<- colnames(get(paste0(tag, "_summary_data")))
+  mouse_names <<- rownames(get(paste0(tag, "_summary_data")))
+}
+
+# Plot summary data for a specific metric and mouse
+plot_summary_data <- function(tag, mouse_name, metric) {
+  row_index <- grep(mouse_name, rownames(get(paste0(tag, "_summary_data"))))
+  col_index <- grep(metric, colnames(get(paste0(tag, "_summary_data"))))
+  
+  datapt <- data.frame(Value = get(paste0(tag, "_summary_data"))[row_index, col_index])
+  datapt$Treat_group <- rownames(get(paste0(tag, "_summary_data")))[row_index]
+  datapt$Color <- ifelse(datapt$Value >= 0, "positive", "negative")
+  colors <- c("positive" = "blue", "negative" = "red")
+  
+  plot <- ggplot(data = datapt, aes(x = Treat_group, y = Value, fill = Color)) + 
+    geom_bar(stat = "identity") + 
+    scale_fill_manual(values = colors) + 
+    geom_text(aes(label = round(Value, 2)), vjust = ifelse(datapt$Value >= 0, -0.5, 1.5), color = "black", size = 3.5) + 
+    geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
+    labs(
+      title = str_to_title(paste0("Average ",tag, " ", remove_periods_and_underscores(metric), " Bar Plot")), 
+      y = paste0(str_to_title(remove_periods_and_underscores(metric),)),
+      x = ""
+    ) +
+    theme_classic(base_size = 22) + 
+    theme(legend.position = "none")
+  
+  return(plot)
+}
+
+# Function to load and plot multiple summary data
+summary_load_and_plot <- function() {
+  plot_count <- as.integer(readline("# of Plots: "))
+  combined_plot <- NULL
+  
+  for (i in 1:plot_count) {
+    tag <- readline(paste0("Enter Plot ", i, " tag: "))
+    summary_load(tag)
+    
+    print("Available Metrics: ")
+    print(metrics)
+    
+    mtric <- readline(paste0("Enter Plot ", i, " Metric: "))
+    
+    print("Mouse Names: ")
+    print(mouse_names)
+    
+    animal <- readline(paste0("Enter Plot ", i, " Mouse Name: "))
+    
+    current_plot <- plot_summary_data(tag = tag, mouse_name = animal, metric = mtric)
+    
+    if (is.null(combined_plot)) {
+      combined_plot <- current_plot
+    } else {
+      combined_plot <- combined_plot + current_plot + plot_layout(ncol = 1)
+    }
+  }
+  
+  print(combined_plot)
+}
+
+# Overlay function to combine two plots
+overlay_plots <- function(plot1, plot2) {
+  plot1 + plot2
+}
+
+# Main UI for the Shiny app
+ui <- navbarPage(
+  title = "Blackbox Data Analysis Plots",
+  tabPanel("Analysis",
+           sidebarLayout(
+             sidebarPanel(
+               selectInput("analysis_type", "Select Analysis Type", choices = c("Tracking Data", "Features Data", "Summary Data")),
+               uiOutput("dynamic_ui"),
+               selectInput("saved_plots", "Saved Plots", choices = NULL, multiple = TRUE),
+               actionButton("overlay_plots", "Overlay Plots")
+             ),
+             mainPanel(
+               plotOutput("plot"),
+               downloadButton("downloadPlot", "Download Plot")
+             )
+           )
+  ),
+  tabPanel("Documentation",
+           fluidPage(
+             titlePanel("Documentation"),
+             h3("Overview"),
+             p("This Shiny application allows for the analysis and visualization of Blackbox output data from tracking, features, and summary datasets."),
+             p("Ignore this warning:"),
+             p("Warning in h5checktypeOrOpenLoc(file, readonly = TRUE, fapl = NULL, native = native) :
+  An open HDF5 file handle exists. If the file has changed on disk meanwhile, the function may not work properly. Run 'h5closeAll()' to close all open HDF5 object handles."),
+             p("Troubleshooting tips:"),
+             p("1. Reload the website if it crashes or the screen becomes unresponsive"),
+             p("2. All raw scripts available at: https://github.com/VP9078/Blackbox-Plotting-in-R.git"),
+             p("3. Contact vihaanpande08@gmail.com for any queries."),
+             h3("Tracking Data Analysis"),
+             p("1. Upload HDF5 file containing tracking data."),
+             p("2. Enter a unique identifier for the dataset."),
+             p("3. Select the body part to analyze and the type of plot (Speed, Likelihood, Trajectory, Heatmap)."),
+             p("4. Specify start and end indices for data subsetting (optional)."),
+             p("5. Click 'Plot Data' to generate the plot."),
+             h3("Features Data Analysis"),
+             p("1. Upload HDF5 file containing features data."),
+             p("2. Enter a unique identifier for the dataset."),
+             p("3. Select the metric to analyze."),
+             p("4. Specify start and end indices for data subsetting (optional)."),
+             p("5. Click 'Load Data and Plot' to generate the plot."),
+             h3("Summary Data Analysis"),
+             p("1. Upload CSV file containing summary data."),
+             p("2. Enter a unique identifier for the dataset."),
+             p("3. Select the metric and mouse name to analyze."),
+             p("4. Click 'Plot Data' to generate the plot."),
+             h3("Overlaying Plots"),
+             p("1. Select multiple saved plots from the 'Saved Plots' dropdown."),
+             p("2. Click 'Overlay Plots' to combine them into a single plot.\n "),
+             p("Contributors: Vihaan Pande, Isaac Molina, Allan-Hermann Pool"),
+           )
+  )
+)
+
+# Server logic for the Shiny app
+server <- function(input, output, session) {
+  combined_plot <- NULL
+  
+  observeEvent(input$analysis_type, {
+    if (input$analysis_type == "Tracking Data") {
+      output$dynamic_ui <- renderUI({
+        tagList(
+          fileInput("tracking_file", "Choose HDF5 File", accept = ".h5"),
+          textInput("tracking_tag", "Enter Unique Identifier", value = "control"),
+          selectInput("tracking_body_part", "Select Body Part", choices = NULL),
+          selectInput("tracking_plot_type", "Select Plot Type", choices = c("Speed", "Likelihood", "Trajectory", "Heatmap")),
+          numericInput("start_idx", "Start Index (Leave as 0 for full values)", value = 0),
+          numericInput("end_idx", "End Index (Leave as 0 for full values)", value = 0),
+          actionButton("tracking_plot_data", "Plot Data")
+        )
+      })
+    } else if (input$analysis_type == "Features Data") {
+      output$dynamic_ui <- renderUI({
+        tagList(
+          fileInput("features_file", "Choose HDF5 File", accept = ".h5"),
+          textInput("features_dataset_name", "Enter Unique Identifier", value = "control"),
+          selectInput("features_metric", "Select Metric", choices = NULL),
+          numericInput("start_idx", "Start Index (Leave as 0 for full values)", value = 0),
+          numericInput("end_idx", "End Index (Leave as 0 for full values)", value = 0),
+          actionButton("features_load_data", "Load Data and Plot")
+        )
+      })
+    } else if (input$analysis_type == "Summary Data") {
+      output$dynamic_ui <- renderUI({
+        tagList(
+          fileInput("summary_file", "Choose CSV File", accept = ".csv"),
+          textInput("summary_tag", "Enter Tag", value = "summary"),
+          selectInput("summary_metric", "Select Metric", choices = NULL),
+          selectInput("summary_mouse_name", "Select Mouse Name", choices = NULL),
+          actionButton("summary_plot_data", "Plot Data")
+        )
+      })
+    }
+  })
+  
+  observeEvent(input$tracking_file, {
+    req(input$tracking_file)
+    tracking_load(input$tracking_file$datapath, input$tracking_tag)
+    updateSelectInput(session, "tracking_body_part", choices = body_parts)
+  })
+  
+  observeEvent(input$tracking_tag, {
+    req(input$tracking_file)
+    tracking_load(input$tracking_file$datapath, input$tracking_tag)
+    updateSelectInput(session, "tracking_body_part", choices = body_parts)
+  })
+  
+  observeEvent(input$tracking_plot_data, {
+    req(input$tracking_file, input$tracking_tag, input$tracking_body_part, input$tracking_plot_type)
+    
+    plot <- switch(input$tracking_plot_type,
+                   "Speed" = plot_speed(input$tracking_tag, input$tracking_body_part, input$start_idx, input$end_idx),
+                   "Likelihood" = plot_likelihood(input$tracking_tag, input$tracking_body_part, input$start_idx, input$end_idx),
+                   "Trajectory" = plot_trajectory(input$tracking_tag, input$tracking_body_part, input$start_idx, input$end_idx),
+                   "Heatmap" = plot_heatmap(input$tracking_tag, input$tracking_body_part, input$start_idx, input$end_idx))
+    
+    plot_name <- paste0(input$tracking_tag, "_", input$tracking_body_part, "_", input$tracking_plot_type, "_plot")
+    assign(plot_name, plot, envir = plot_storage)
+    
+    updateSelectInput(session, "saved_plots", choices = ls(envir = plot_storage), selected = ls(envir = plot_storage))
+    
+    output$plot <- renderPlot({
+      plot
+    })
+  })
+  
+  observeEvent(input$features_file, {
+    req(input$features_file)
+    
+    bboxdataPath <- input$features_file$datapath
+    suppressWarnings(bboxdata <<- H5Fopen(bboxdataPath))
+    
+    groupls <- h5ls(bboxdata)
+    bboxgroupname <- unique(groupls$group)[2]
+    
+    behavioral_metrics <<- names(h5read(bboxdataPath, bboxgroupname))
+    filtered_metrics <- behavioral_metrics[!grepl("fps|frame_count|recording_time", behavioral_metrics)]
+    
+    updateSelectInput(session, "features_metric", choices = filtered_metrics)
+  })
+  
+  observeEvent(input$features_load_data, {
+    req(input$features_file, input$features_metric)
+    
+    bboxdataPath <- input$features_file$datapath
+    bboxdsetnm <- input$features_dataset_name
+    metric <- input$features_metric
+    
+    features_load_and_plot(bboxdataPath, bboxdsetnm, metric, input$start_idx, input$end_idx)
+    
+    plot_name <- paste0(metric, "_", bboxdsetnm, "_plot")
+    assign(plot_name, get(plot_name, envir = .GlobalEnv), envir = plot_storage)
+    
+    updateSelectInput(session, "saved_plots", choices = ls(envir = plot_storage), selected = ls(envir = plot_storage))
+    
+    output$plot <- renderPlot({
+      p <- get(plot_name, envir = .GlobalEnv)
+      p
+    })
+  })
+  
+  observeEvent(input$summary_file, {
+    req(input$summary_file)
+    summary_load(input$summary_tag, input$summary_file$datapath)
+    updateSelectInput(session, "summary_metric", choices = metrics)
+    updateSelectInput(session, "summary_mouse_name", choices = mouse_names)
+  })
+  
+  observeEvent(input$summary_plot_data, {
+    req(input$summary_file, input$summary_tag, input$summary_metric, input$summary_mouse_name)
+    
+    plot <- plot_summary_data(input$summary_tag, input$summary_mouse_name, input$summary_metric)
+    
+    plot_name <- paste0(input$summary_tag, "_", input$summary_mouse_name, "_", input$summary_metric, "_plot")
+    assign(plot_name, plot, envir = plot_storage)
+    
+    updateSelectInput(session, "saved_plots", choices = ls(envir = plot_storage), selected = ls(envir = plot_storage))
+    
+    output$plot <- renderPlot({
+      plot
+    })
+  })
+  
+  observeEvent(input$overlay_plots, {
+    req(input$saved_plots)
+    selected_plots <- input$saved_plots
+    
+    combined_plot <<- get(selected_plots[1], envir = plot_storage)
+    
+    for (i in 2:length(selected_plots)) {
+      combined_plot <<- overlay_plots(combined_plot, get(selected_plots[i], envir = plot_storage))
+    }
+    
+    output$plot <- renderPlot({
+      combined_plot
+    })
+  })
+  
+  output$downloadPlot <- downloadHandler(
+    filename = function() {
+      if (input$analysis_type == "Tracking Data") {
+        paste(input$tracking_tag, input$tracking_body_part, input$tracking_plot_type, "plot.png", sep = "_")
+      } else if (input$analysis_type == "Features Data") {
+        paste(input$features_metric, "_", input$features_dataset_name, "_plot.png", sep = "")
+      } else if (input$analysis_type == "Summary Data") {
+        paste(input$summary_tag, input$summary_mouse_name, input$summary_metric, "plot.png", sep = "_")
+      }
+    },
+    content = function(file) {
+      plot <- if (input$analysis_type == "Tracking Data") {
+        switch(input$tracking_plot_type,
+               "Speed" = plot_speed(input$tracking_tag, input$tracking_body_part, input$start_idx, input$end_idx),
+               "Likelihood" = plot_likelihood(input$tracking_tag, input$tracking_body_part, input$start_idx, input$end_idx),
+               "Trajectory" = plot_trajectory(input$tracking_tag, input$tracking_body_part, input$start_idx, input$end_idx),
+               "Heatmap" = plot_heatmap(input$tracking_tag, input$tracking_body_part, input$start_idx, input$end_idx))
+      } else if (input$analysis_type == "Features Data") {
+        plot_name <- paste0(input$features_metric, "_", input$features_dataset_name, "_plot")
+        get(plot_name, envir = .GlobalEnv)
+      } else if (input$analysis_type == "Summary Data") {
+        plot_summary_data(input$summary_tag, input$summary_mouse_name, input$summary_metric)
+      }
+      ggsave(file, plot = plot, device = "png", width = 12, height = 8, units = "in")
+    }
+  )
+}
+
+# Run the Shiny app
+shinyApp(ui = ui, server = server)
