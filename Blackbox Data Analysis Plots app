@@ -357,7 +357,7 @@ summary_load <- function(tag, file_path) {
 }
 
 # Plot summary data for a specific metric and mouse
-plot_summary_data <- function(tag, mouse_name, metric) {
+plot_summary_data <- function(tag, mouse_name, metric, y_limit = NULL) {
   summary_data <- get(paste0(tag, "_summary_data"))
   
   # Validate if the selected mouse name and metric exist in the data
@@ -393,22 +393,15 @@ plot_summary_data <- function(tag, mouse_name, metric) {
       panel.grid.major = element_blank(),  # Removed major grid lines
       panel.grid.minor = element_blank(),  # Removed minor grid lines
       panel.border = element_blank()  # Removed panel border
-    )
+    ) +
+    coord_cartesian(ylim = y_limit)  # Set y-axis limits if provided
   
   return(plot)
 }
 
-# Overlay function to combine two plots with unified y-axis limits
-overlay_plots <- function(selected_plots) {
-  plots <- lapply(selected_plots, function(plot_name) get(plot_name, envir = plot_storage))
-  
-  y_limits <- range(sapply(plots, function(p) ggplot_build(p)$layout$panel_params[[1]]$y.range), na.rm = TRUE)
-  
-  plots <- lapply(plots, function(p) p + coord_cartesian(ylim = y_limits))
-  
-  combined_plot <- wrap_plots(plots, ncol = 1)
-  
-  return(combined_plot)
+# Overlay function to combine two plots
+overlay_plots <- function(plot1, plot2) {
+  plot1 + plot2
 }
 
 # Main UI for the Shiny app
@@ -623,7 +616,16 @@ server <- function(input, output, session) {
     req(input$saved_plots)
     selected_plots <- input$saved_plots
     
-    combined_plot <- overlay_plots(selected_plots)
+    max_y_limit <- max(sapply(selected_plots, function(plot_name) {
+      max(ggplot_build(get(plot_name, envir = plot_storage))$layout$panel_params[[1]]$y.range)
+    }))
+    
+    combined_plot <- lapply(selected_plots, function(plot_name) {
+      plot <- get(plot_name, envir = plot_storage)
+      plot + coord_cartesian(ylim = c(0, max_y_limit))
+    })
+    
+    combined_plot <- patchwork::wrap_plots(combined_plot)
     
     output$plot <- renderPlot({
       combined_plot
