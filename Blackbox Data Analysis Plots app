@@ -21,6 +21,12 @@ remove_periods_and_underscores <- function(text) {
   text <- gsub("\\.", " ", text)  # Replace periods with spaces
   text <- gsub(" +", " ", text)  # Replace multiple spaces with a single space
   text <- trimws(text)  # Trim leading and trailing whitespace
+  
+  if (grepl("average", text)) {
+    avgidx <- grep("average", text) + nchar("average") + 1
+    text <- str_sub(text, start = (avgidx))
+  }
+  
   return(text)
 }
 
@@ -352,64 +358,57 @@ summary_load <- function(tag, file_path) {
 
 # Plot summary data for a specific metric and mouse
 plot_summary_data <- function(tag, mouse_name, metric) {
-  row_index <- grep(mouse_name, rownames(get(paste0(tag, "_summary_data"))))
-  col_index <- grep(metric, colnames(get(paste0(tag, "_summary_data"))))
+  summary_data <- get(paste0(tag, "_summary_data"))
   
-  datapt <- data.frame(Value = get(paste0(tag, "_summary_data"))[row_index, col_index])
-  datapt$Treat_group <- rownames(get(paste0(tag, "_summary_data")))[row_index]
+  # Validate if the selected mouse name and metric exist in the data
+  validate(
+    need(mouse_name %in% rownames(summary_data), "Selected mouse name does not exist in the data."),
+    need(metric %in% colnames(summary_data), "Selected metric does not exist in the data.")
+  )
+  
+  row_index <- which(rownames(summary_data) == mouse_name)
+  col_index <- which(colnames(summary_data) == metric)
+  
+  datapt <- data.frame(Value = summary_data[row_index, col_index])
+  datapt$Treat_group <- rownames(summary_data)[row_index]
   datapt$Color <- ifelse(datapt$Value >= 0, "positive", "negative")
-  colors <- c("positive" = "blue", "negative" = "red")
+  colors <- c("positive" = "#00BFC4", "negative" = "#F8766D")  # Updated colors
   
   plot <- ggplot(data = datapt, aes(x = Treat_group, y = Value, fill = Color)) + 
-    geom_bar(stat = "identity") + 
+    geom_bar(stat = "identity", width = 0.7, color = "black", size = 0.3) +  # Adjusted bar width, added border
     scale_fill_manual(values = colors) + 
-    geom_text(aes(label = round(Value, 2)), vjust = ifelse(datapt$Value >= 0, -0.5, 1.5), color = "black", size = 3.5) + 
+    geom_text(aes(label = round(Value, 2)), vjust = ifelse(datapt$Value >= 0, -0.5, 1.5), color = "black", size = 5) +  # Adjusted text size
     geom_hline(yintercept = 0, color = "black", linetype = "dashed") +
     labs(
-      title = str_to_title(paste0("Average ",tag, " ", remove_periods_and_underscores(metric), " Bar Plot")), 
-      y = paste0(str_to_title(remove_periods_and_underscores(metric),)),
+      title = str_to_title(paste0("Average ", tag, " ", remove_periods_and_underscores(metric), " Bar Plot")), 
+      y = str_to_title(remove_periods_and_underscores(metric)),
       x = ""
     ) +
-    theme_classic(base_size = 22) + 
-    theme(legend.position = "none")
+    theme_minimal(base_size = 15) +  # Changed theme for cleaner look
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 18),  # Adjusted title size
+      axis.title.y = element_text(size = 16),  # Adjusted y-axis title size
+      axis.text = element_text(size = 14),  # Adjusted axis text size
+      legend.position = "none",
+      panel.grid.major = element_blank(),  # Removed major grid lines
+      panel.grid.minor = element_blank(),  # Removed minor grid lines
+      panel.border = element_blank()  # Removed panel border
+    )
   
   return(plot)
 }
 
-# Function to load and plot multiple summary data
-summary_load_and_plot <- function() {
-  plot_count <- as.integer(readline("# of Plots: "))
-  combined_plot <- NULL
+# Overlay function to combine two plots with unified y-axis limits
+overlay_plots <- function(selected_plots) {
+  plots <- lapply(selected_plots, function(plot_name) get(plot_name, envir = plot_storage))
   
-  for (i in 1:plot_count) {
-    tag <- readline(paste0("Enter Plot ", i, " tag: "))
-    summary_load(tag)
-    
-    print("Available Metrics: ")
-    print(metrics)
-    
-    mtric <- readline(paste0("Enter Plot ", i, " Metric: "))
-    
-    print("Mouse Names: ")
-    print(mouse_names)
-    
-    animal <- readline(paste0("Enter Plot ", i, " Mouse Name: "))
-    
-    current_plot <- plot_summary_data(tag = tag, mouse_name = animal, metric = mtric)
-    
-    if (is.null(combined_plot)) {
-      combined_plot <- current_plot
-    } else {
-      combined_plot <- combined_plot + current_plot + plot_layout(ncol = 1)
-    }
-  }
+  y_limits <- range(sapply(plots, function(p) ggplot_build(p)$layout$panel_params[[1]]$y.range), na.rm = TRUE)
   
-  print(combined_plot)
-}
-
-# Overlay function to combine two plots
-overlay_plots <- function(plot1, plot2) {
-  plot1 + plot2
+  plots <- lapply(plots, function(p) p + coord_cartesian(ylim = y_limits))
+  
+  combined_plot <- wrap_plots(plots, ncol = 1)
+  
+  return(combined_plot)
 }
 
 # Main UI for the Shiny app
@@ -434,6 +433,7 @@ ui <- navbarPage(
              titlePanel("Documentation"),
              h3("Overview"),
              p("This Shiny application allows for the analysis and visualization of Blackbox output data from tracking, features, and summary datasets."),
+             p("Make sure to input the correct file type"),
              p("Ignore this warning:"),
              p("Warning in h5checktypeOrOpenLoc(file, readonly = TRUE, fapl = NULL, native = native) :
   An open HDF5 file handle exists. If the file has changed on disk meanwhile, the function may not work properly. Run 'h5closeAll()' to close all open HDF5 object handles."),
@@ -460,8 +460,11 @@ ui <- navbarPage(
              p("4. Click 'Plot Data' to generate the plot."),
              h3("Overlaying Plots"),
              p("1. Select multiple saved plots from the 'Saved Plots' dropdown."),
-             p("2. Click 'Overlay Plots' to combine them into a single plot.\n "),
+             p("2. Click 'Overlay Plots' to combine them into a single plot."),
              p("Contributors: Vihaan Pande, Isaac Molina, Allan-Hermann Pool"),
+             h3("How to Cite This Resource"),
+             p("If you find the resources on this website useful for your research or analysis, please cite as follows:"),
+             p("V. Pande, I. Molina, A.-H. Pool, Eds., Blackbox Data Analysis Plots (2024), (available at https://vihaanpande08.shinyapps.io/BlackboxDataAnalysisPlots/)."),
            )
   )
 )
@@ -478,8 +481,8 @@ server <- function(input, output, session) {
           textInput("tracking_tag", "Enter Unique Identifier", value = "control"),
           selectInput("tracking_body_part", "Select Body Part", choices = NULL),
           selectInput("tracking_plot_type", "Select Plot Type", choices = c("Speed", "Likelihood", "Trajectory", "Heatmap")),
-          numericInput("start_idx", "Start Index (Leave as 0 for full values)", value = 0),
-          numericInput("end_idx", "End Index (Leave as 0 for full values)", value = 0),
+          numericInput("start_idx", "Start Frame (Leave as 0 for full values)", value = 0),
+          numericInput("end_idx", "End Frame (Leave as 0 for full values)", value = 0),
           actionButton("tracking_plot_data", "Plot Data")
         )
       })
@@ -489,8 +492,8 @@ server <- function(input, output, session) {
           fileInput("features_file", "Choose HDF5 File", accept = ".h5"),
           textInput("features_dataset_name", "Enter Unique Identifier", value = "control"),
           selectInput("features_metric", "Select Metric", choices = NULL),
-          numericInput("start_idx", "Start Index (Leave as 0 for full values)", value = 0),
-          numericInput("end_idx", "End Index (Leave as 0 for full values)", value = 0),
+          numericInput("start_idx", "Start Frame (Leave as 0 for full values)", value = 0),
+          numericInput("end_idx", "End Frame (Leave as 0 for full values)", value = 0),
           actionButton("features_load_data", "Load Data and Plot")
         )
       })
@@ -555,6 +558,13 @@ server <- function(input, output, session) {
     updateSelectInput(session, "tracking_body_part", choices = body_parts)
   })
   
+  observeEvent(input$summary_tag, {
+    req(input$summary_file)
+    summary_load(input$summary_tag, input$summary_file$datapath)
+    updateSelectInput(session, "summary_metric", choices = metrics)
+    updateSelectInput(session, "summary_mouse_name", choices = mouse_names)
+  })
+  
   observeEvent(input$tracking_plot_data, {
     req(input$tracking_file, input$tracking_tag, input$tracking_body_part, input$tracking_plot_type)
     
@@ -613,11 +623,7 @@ server <- function(input, output, session) {
     req(input$saved_plots)
     selected_plots <- input$saved_plots
     
-    combined_plot <<- get(selected_plots[1], envir = plot_storage)
-    
-    for (i in 2:length(selected_plots)) {
-      combined_plot <<- overlay_plots(combined_plot, get(selected_plots[i], envir = plot_storage))
-    }
+    combined_plot <- overlay_plots(selected_plots)
     
     output$plot <- renderPlot({
       combined_plot
