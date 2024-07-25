@@ -65,7 +65,7 @@ features_load_and_plot <- function() {
       plot_name <- paste0(behavioral_metrics[i], "_", bboxdsetnm, "_plot")
       p <- ggplot(obj_df, aes(x = times, y = values)) +
         geom_tile(aes(width = time_increments, height = Inf, fill = factor(values))) +
-        scale_fill_manual(values = c("1" = "blue", "0" = "red"), na.value = "transparent") +
+        scale_fill_manual(values = c("1" = "transparent", "0" = "red"), na.value = "blue") +
         labs(x = "Time (s)", y = behavioral_metrics[i], fill = "State") +
         ggtitle(plot_title) +
         theme_minimal() +
