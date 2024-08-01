@@ -24,7 +24,7 @@ pixel_to_cm <- 0.1
 tracking_load <- function(){
   file_path = file.choose()  # Prompt user to select file
   
-  tag <<- readline("Give a unique tag: ")  # Prompt user to provide a tag
+  tag <- readline("Give a unique tag: ")  # Prompt user to provide a tag
   
   # Make a tag dataset to save all tag datasets
   if (exists("tag_memory", envir = .GlobalEnv)) {
